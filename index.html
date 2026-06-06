@@ -364,6 +364,7 @@ const ALL_ELIM=[...R32,...R16,...QF,...SF,...FIN];
 const TOTAL=247; // 72 grupos + 31 eliminatorias + 144 tarjetas (48 equipos x 3)
 const TAB_ORDER=["posiciones","tarjetas","grupos","r32","r16","qf","sf","final","ranking"];
 let CU=null,activeTab="posiciones";
+const REAL_USER="__REAL__"; // usuario virtual: sus "picks" son los resultados reales (para armar el bracket real en el panel admin)
 
 // ===== Backend Firebase (con caché local en memoria) =====
 // El estado de cada usuario se guarda como string JSON bajo state/users/{clave}
@@ -386,7 +387,30 @@ function fbWriteUser(u){
 function fbWriteDeleted(){if(_fbReady&&fbDB){try{fbDB.ref("state/deleted").set(JSON.stringify(_cache.state.deleted||[]));}catch(e){console.error(e);}}}
 function fbWriteResults(){if(_fbReady&&fbDB){try{fbDB.ref("results/blob").set(JSON.stringify(_cache.results||{}));}catch(e){console.error(e);}}}
 function uD(u){const d=gS();return(d.users&&d.users[u])||{picks:{},saved:false,pts:0,pw:""};}
-function getPicks(u){return uD(u).picks||{};}
+function getPicks(u){if(u===REAL_USER)return realPicksObj();return uD(u).picks||{};}
+// Construye un objeto tipo "picks" a partir de los resultados REALES capturados por el admin.
+// Reutiliza toda la lógica de standings/bracket que ya existe, pero alimentada con datos reales.
+function realPicksObj(){
+  const r=_cache.results||{};const p={};
+  if(r.grp)Object.keys(r.grp).forEach(k=>{p[k]=r.grp[k];});            // marcadores reales de grupos
+  if(r.elim)Object.keys(r.elim).forEach(s=>{p["w_"+s]=r.elim[s];});   // ganadores reales de eliminatorias
+  return p;
+}
+// ¿Ya se capturaron TODOS los partidos reales de un grupo?
+function realGroupDone(g){
+  const teams=GRP[g];const picks=realPicksObj();
+  return getMat(teams).every((_,i)=>{const pk=picks[g+"-"+i];return pk&&pk.s1!==undefined&&pk.s2!==undefined;});
+}
+function allRealGroupsDone(){return Object.keys(GRP).every(realGroupDone);}
+// Resuelve un lado de una llave de 16vos con datos REALES, solo si ya está determinado.
+function realR32Side(slot,side){
+  const role=side===1?slot.role1:slot.role2;
+  const g=side===1?slot.g1:slot.g2;
+  const pool=side===2?slot.pool2:null;
+  if(role===1||role===2)return realGroupDone(g)?groupPos(g,role,REAL_USER):null;
+  if(role===3)return allRealGroupsDone()?best3rd(pool,REAL_USER,slot.id):null; // los 3ros solo se conocen con TODOS los grupos terminados
+  return null;
+}
 function isSaved(u){return !!(uD(u).saved);}
 function getPoints(u){return calcUserPts(u);}
 function getUserPw(u){return uD(u).pw||"";}
@@ -1028,20 +1052,36 @@ function buildResBody(tab){
   } else {
     const slotMap={r32:[R32,"Dieciseisavos",true],r16:[R16,"Octavos",false],qf:[QF,"Cuartos",false],sf:[SF,"Semifinales",false],fin:[FIN,"Final",false]};
     const[slots,title,isR32]=slotMap[tab]||[[],"",false];
+    _third3Cache.u=null; // recalcular siempre los mejores terceros reales (por si cambió un marcador de grupos)
+    // Aviso de estado según los resultados reales capturados
+    if(isR32&&!allRealGroupsDone()){
+      html+=`<div style="font-size:11px;color:var(--warning);background:var(--warningbg);border-radius:8px;padding:8px 10px;margin-bottom:.6rem;line-height:1.4">⚠️ Las llaves se arman con los resultados reales de la <b>fase de grupos</b>. Termina de capturar todos los partidos de grupos para que se definan los equipos (especialmente los mejores terceros).</div>`;
+    }
     slots.forEach((slot,idx)=>{
-      // Resolve team names using first saved user or CU or simulation
-      const refUser=allUsers()[0]||CU;
-      const{n1,n2}=refUser?getMatchPair(slot,refUser,isR32):{n1:null,n2:null};
-      const lb1=n1||(isR32?phLabel(slot,1):"Por definir");
-      const lb2=n2||(isR32?phLabel(slot,2):"Por definir");
+      // Equipos REALES de la llave: en 16vos salen de los grupos reales; de octavos en adelante, de los ganadores reales ya marcados.
+      let n1,n2;
+      if(isR32){n1=realR32Side(slot,1);n2=realR32Side(slot,2);}
+      else{const mp=getMatchPair(slot,REAL_USER,false);n1=mp.n1;n2=mp.n2;}
+      const lb1=n1||phLabel(slot,1);
+      const lb2=n2||phLabel(slot,2);
+      const ready=!!(n1&&n2);
       const real=getRealElim(slot.id);
+      const stale=ready&&real&&real!==n1&&real!==n2; // un ganador guardado que ya no corresponde a estos equipos
+      function btn(name,placeholder){
+        if(ready){
+          const sel=real===name;
+          return `<button class="res-winner-btn${sel?" sel":""}" onclick="saveRealElim('${slot.id}','${name.replace(/'/g,"\\'")}',this.parentElement)">${sel?"✓ ":""}${name}</button>`;
+        }
+        return `<button class="res-winner-btn" disabled style="opacity:.35;cursor:not-allowed">${placeholder}</button>`;
+      }
       html+=`<div class="res-elim-row">
         <span style="font-size:11px;color:var(--text3);width:20px">${idx+1}</span>
-        <span style="flex:1;font-size:12px;color:var(--text)">${n1?fl(n1):""} ${lb1}</span>
+        <span style="flex:1;font-size:12px;color:var(--text)">${n1?fl(n1)+" ":""}${lb1}</span>
         <span style="font-size:11px;color:var(--text3)">vs</span>
-        <span style="flex:1;font-size:12px;color:var(--text);text-align:right">${lb2} ${n2?fl(n2):""}</span>
-        <button class="res-winner-btn${real===lb1?" sel":""}" onclick="saveRealElim('${slot.id}','${lb1.replace(/'/g,"\'")}',this.parentElement)">${real===lb1?"✓ ":""}${lb1}</button>
-        <button class="res-winner-btn${real===lb2?" sel":""}" onclick="saveRealElim('${slot.id}','${lb2.replace(/'/g,"\'")}',this.parentElement)">${real===lb2?"✓ ":""}${lb2}</button>
+        <span style="flex:1;font-size:12px;color:var(--text);text-align:right">${lb2}${n2?" "+fl(n2):""}</span>
+        ${btn(n1,lb1)}
+        ${btn(n2,lb2)}
+        ${stale?`<span style="font-size:10px;color:var(--danger)" title="El ganador guardado ya no juega esta llave; vuelve a elegir">⚠️</span>`:""}
       </div>`;
     });
   }
