@@ -454,6 +454,7 @@ function calcStandings(g,u){
   const teams=GRP[g];const picks=getPicks(u);
   const stats=new Map();
   teams.forEach((t,idx)=>{stats.set(idx,{pts:0,gf:0,ga:0,gd:0,name:t,idx,played:0,fp:0});});
+  const matches=[]; // resultados, para la mini-tabla de enfrentamiento directo (head-to-head)
   getMat(teams).forEach(([t1,t2],i)=>{
     const p=picks[g+"-"+i];if(!p||p.s1===undefined||p.s2===undefined)return;
     const s1=parseInt(p.s1),s2=parseInt(p.s2);
@@ -462,11 +463,43 @@ function calcStandings(g,u){
     stats.get(i2).gf+=s2;stats.get(i2).ga+=s1;stats.get(i2).gd+=s2-s1;stats.get(i2).played++;
     if(s1>s2)stats.get(i1).pts+=3;else if(s1<s2)stats.get(i2).pts+=3;
     else{stats.get(i1).pts+=1;stats.get(i2).pts+=1;}
+    matches.push({i1,i2,s1,s2});
   });
-  // Agregar Fair Play
   teams.forEach((t,idx)=>{stats.get(idx).fp=getFP(t,picks);});
-  // Ordenar: pts > gd > gf > fp (mayor fp=mejor, fp es negativo así que mayor número gana) > idx
-  return [...stats.values()].sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf||b.fp-a.fp||a.idx-b.idx);
+  const arr=[...stats.values()];
+  // Mini-tabla de enfrentamiento directo: solo los partidos jugados ENTRE los equipos empatados
+  function h2h(idxList){
+    const m={};idxList.forEach(i=>m[i]={pts:0,gd:0,gf:0});
+    matches.forEach(({i1,i2,s1,s2})=>{
+      if(idxList.indexOf(i1)>=0&&idxList.indexOf(i2)>=0){
+        m[i1].gf+=s1;m[i1].gd+=s1-s2;m[i2].gf+=s2;m[i2].gd+=s2-s1;
+        if(s1>s2)m[i1].pts+=3;else if(s1<s2)m[i2].pts+=3;else{m[i1].pts++;m[i2].pts++;}
+      }
+    });
+    return m;
+  }
+  // Orden oficial FIFA 2026:
+  //  1) puntos (todos los partidos del grupo)
+  //  2) entre los empatados en puntos: ENFRENTAMIENTO DIRECTO -> pts, dif. de goles, goles entre ellos
+  //  3) diferencia de goles general
+  //  4) goles general
+  //  5) fair play (mayor fp = menos tarjetas)
+  //  6) (oficialmente ranking FIFA; aquí usamos el orden del grupo como último recurso)
+  arr.sort((a,b)=>{
+    if(b.pts!==a.pts)return b.pts-a.pts;
+    const tied=arr.filter(x=>x.pts===a.pts).map(x=>x.idx);
+    if(tied.length>=2){
+      const m=h2h(tied);
+      if(m[b.idx].pts!==m[a.idx].pts)return m[b.idx].pts-m[a.idx].pts;
+      if(m[b.idx].gd!==m[a.idx].gd)return m[b.idx].gd-m[a.idx].gd;
+      if(m[b.idx].gf!==m[a.idx].gf)return m[b.idx].gf-m[a.idx].gf;
+    }
+    if(b.gd!==a.gd)return b.gd-a.gd;
+    if(b.gf!==a.gf)return b.gf-a.gf;
+    if(b.fp!==a.fp)return b.fp-a.fp;
+    return a.idx-b.idx;
+  });
+  return arr;
 }
 function groupPos(g,pos,u){const s=calcStandings(g,u);return s[pos-1]?s[pos-1].name:null;}
 function best3rdSet(u){
@@ -483,26 +516,25 @@ function buildThirdCache(u){
   const thirds=Object.keys(GRP).map(g=>{const s=calcStandings(g,u);return s.length>=3?{g,t:s[2]}:null;}).filter(Boolean);
   thirds.sort((a,b)=>b.t.pts-a.t.pts||b.t.gd-a.t.gd||b.t.gf-a.t.gf||b.t.fp-a.t.fp);
   const top8=thirds.slice(0,8);
-  const used=new Set();
-  const map={};
-  R32.forEach(slot=>{
-    if(slot.role2===3){
-      for(const entry of top8){
-        if(slot.pool2.includes(entry.g)&&!used.has(entry.t.name)){
-          used.add(entry.t.name);map[slot.id]=entry.t.name;break;
-        }
-      }
-      // Fallback: cualquier top8 no usado
-      if(!map[slot.id]){
-        for(const entry of top8){
-          if(!used.has(entry.t.name)){
-            used.add(entry.t.name);map[slot.id]=entry.t.name;break;
-          }
-        }
-      }
-      if(!map[slot.id])map[slot.id]=null;
+  const slots=R32.filter(s=>s.role2===3); // las 8 llaves que reciben un mejor tercero
+  // Emparejamiento por backtracking: cada llave recibe un tercero cuyo grupo esté en su pool
+  // permitido, sin repetir, garantizando que los 8 queden colocados (bracket válido, sin
+  // revanchas de grupo). Determinista: llaves en orden de bracket, terceros por ranking.
+  const map={};const used=new Set();
+  function bt(i){
+    if(i>=slots.length)return true;
+    const slot=slots[i];
+    for(const e of top8){
+      if(used.has(e.t.name))continue;
+      if(slot.pool2.indexOf(e.g)<0)continue;
+      map[slot.id]=e.t.name;used.add(e.t.name);
+      if(bt(i+1))return true;
+      used.delete(e.t.name);delete map[slot.id];
     }
-  });
+    return false;
+  }
+  bt(0);
+  slots.forEach(s=>{if(!map[s.id])map[s.id]=null;}); // si faltan datos, queda sin definir
   _third3Cache.u=u;_third3Cache.map=map;
 }
 function best3rd(pool,u,slotId){
