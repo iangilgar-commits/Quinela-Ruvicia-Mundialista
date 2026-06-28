@@ -509,6 +509,17 @@ function best3rdSet(u){
   return new Set(thirds.slice(0,8).map(t=>t.name));
 }
 
+// ── Tabla OFICIAL FIFA de asignación de mejores terceros (Mundial 2026) ──
+// La FIFA publica, para CADA combinación posible de los 8 grupos cuyo 3er lugar
+// clasifica, a qué llave (ganador de grupo) va el tercero de cada grupo. Esto NO se
+// puede deducir solo con "que no haya revancha": existen varios cruces válidos y solo
+// uno es el oficial. Clave: las 8 letras de grupo (ordenadas) con 3er lugar clasificado.
+// Valor: { slotId: grupoDelTercero que va en esa llave }.
+const FIFA_THIRD_TABLE={
+  // Combinación REAL del Mundial 2026 (terceros de B, D, E, F, I, J, K, L):
+  // m74=1E, m77=1I, m79=1A, m80=1L, m81=1D, m82=1G, m85=1B, m87=1K
+  "BDEFIJKL":{m74:"D",m77:"F",m79:"E",m80:"K",m81:"B",m82:"I",m85:"J",m87:"L"}
+};
 // Cache de asignación de 3ros para evitar duplicados en R32 (por usuario)
 // Se recalcula cada vez que se llama resolveR32Side con side=1 (inicio de nuevo recorrido)
 const _third3Cache={u:null,map:{}};
@@ -517,10 +528,21 @@ function buildThirdCache(u){
   thirds.sort((a,b)=>b.t.pts-a.t.pts||b.t.gd-a.t.gd||b.t.gf-a.t.gf||b.t.fp-a.t.fp);
   const top8=thirds.slice(0,8);
   const slots=R32.filter(s=>s.role2===3); // las 8 llaves que reciben un mejor tercero
-  // Emparejamiento por backtracking: cada llave recibe un tercero cuyo grupo esté en su pool
-  // permitido, sin repetir, garantizando que los 8 queden colocados (bracket válido, sin
-  // revanchas de grupo). Determinista: llaves en orden de bracket, terceros por ranking.
-  const map={};const used=new Set();
+  const map={};
+  // 1) Tabla OFICIAL de la FIFA según el conjunto de grupos con 3er lugar clasificado
+  const key=top8.map(e=>e.g).sort().join("");
+  const official=FIFA_THIRD_TABLE[key];
+  if(official){
+    const byGroup={};top8.forEach(e=>{byGroup[e.g]=e.t.name;});
+    let ok=true;
+    slots.forEach(s=>{const nm=byGroup[official[s.id]];if(nm)map[s.id]=nm;else ok=false;});
+    if(ok){_third3Cache.u=u;_third3Cache.map=map;return;}
+    slots.forEach(s=>{delete map[s.id];}); // no cuadró: usar respaldo
+  }
+  // 2) Respaldo: emparejamiento por backtracking — cada llave recibe un tercero cuyo grupo
+  // esté en su pool permitido, sin repetir, garantizando que los 8 queden colocados (bracket
+  // válido, sin revanchas). Determinista: llaves en orden de bracket, terceros por ranking.
+  const used=new Set();
   function bt(i){
     if(i>=slots.length)return true;
     const slot=slots[i];
