@@ -508,6 +508,14 @@ function best3rdSet(u){
   thirds.sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf||b.fp-a.fp);
   return new Set(thirds.slice(0,8).map(t=>t.name));
 }
+// Conjunto de los 32 equipos que (según u) clasifican a 16avos:
+// los 2 primeros de cada grupo + los 8 mejores terceros.
+function qualifiedSet(u){
+  const set=new Set();
+  Object.keys(GRP).forEach(g=>{const s=calcStandings(g,u);if(s[0])set.add(s[0].name);if(s[1])set.add(s[1].name);});
+  best3rdSet(u).forEach(n=>set.add(n));
+  return set;
+}
 
 // ── Tabla OFICIAL FIFA de asignación de mejores terceros (Mundial 2026) ──
 // La FIFA publica, para CADA combinación posible de los 8 grupos cuyo 3er lugar
@@ -897,7 +905,7 @@ function renderRanking(){
       <div style="text-align:right"><div style="font-size:15px;font-weight:500">${u.pts} pts</div><div style="font-size:11px;color:var(--text3)">${u.picks}/${TOTAL}</div></div>
     </div>`;
   });
-  html+=`</div><div style="font-size:11px;color:var(--text3);padding:10px 4px;line-height:1.6">Grupos: 1 pt ganador / 3 pts marcador exacto · Eliminatorias: 1 pt por equipo que avanza</div>`;
+  html+=`</div><div style="font-size:11px;color:var(--text3);padding:10px 4px;line-height:1.6">Grupos: 1 pt ganador / 3 pts marcador exacto · Clasificación: 1 pt por equipo que llega a 16avos · Eliminatorias: 1 pt por equipo que avanza · Tarjetas: 2 pts por acierto</div>`;
   c.innerHTML=html;
 }
 function renderLoginRankings(){
@@ -1011,6 +1019,13 @@ function calcUserPts(u){
       if(parseInt(pred)===parseInt(real))pts+=2;
     });
   });
+  // Clasificación a 16avos: +1 por cada equipo que el usuario predijo entre los 32
+  // clasificados (2 primeros de cada grupo + 8 mejores terceros) y que realmente clasificó.
+  // Sin importar la posición ni la llave; solo cuenta cuando TODOS los grupos reales ya están capturados.
+  if(allRealGroupsDone()){
+    const real32=qualifiedSet(REAL_USER);
+    qualifiedSet(u).forEach(team=>{if(real32.has(team))pts+=1;});
+  }
   return pts;
 }
 
